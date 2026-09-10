@@ -13,6 +13,7 @@ if status is-interactive
     alias lg 'lazygit'
 
     abbr -a q exit
+    abbr -a cls clear
     abbr -a cat bat
     abbr -a vf 'nvim ~/.config/fish/config.fish'
     abbr -a vk 'nvim ~/.config/kitty/kitty.conf'
