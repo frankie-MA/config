@@ -6,18 +6,6 @@
       "ctrl-enter": "pane::SplitDown",
       "ctrl-\\": "pane::SplitRight",
 
-      // Навигация между панелями в Vim-стиле
-      "ctrl-h": "workspace::ActivatePaneLeft",
-      "ctrl-j": "workspace::ActivatePaneDown",
-      "ctrl-k": "workspace::ActivatePaneUp",
-      "ctrl-l": "workspace::ActivatePaneRight",
-
-      // Перемещение панелей
-      "ctrl-shift-h": "workspace::MovePaneLeft",
-      "ctrl-shift-j": "workspace::MovePaneDown",
-      "ctrl-shift-k": "workspace::MovePaneUp",
-      "ctrl-shift-l": "workspace::MovePaneRight",
-
       // Соседние вкладки
       "ctrl-shift-[": "pane::ActivatePreviousItem",
       "ctrl-shift-]": "pane::ActivateNextItem",
@@ -36,8 +24,8 @@
   {
     "context": "vim_mode == normal && !menu",
     "bindings": {
-      // Закрыть текущую вкладку
-      "ctrl-w": "pane::CloseActiveItem"
+      // ctrl-w — префикс для vim-style навигации по панелям (из дефолтного vim.json)
+      // ctrl-w h/j/k/l — ActivatePane*, ctrl-w w — ActivateNextPane, ctrl-w q — CloseActiveItem
     }
   },
   {
