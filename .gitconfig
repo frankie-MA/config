@@ -1,3 +1,9 @@
 [user]
 	name = frankie
 	email = mafcksct@prton.me
+[credential "https://github.com"]
+	helper = 
+	helper = !/opt/homebrew/bin/gh auth git-credential
+[credential "https://gist.github.com"]
+	helper = 
+	helper = !/opt/homebrew/bin/gh auth git-credential
