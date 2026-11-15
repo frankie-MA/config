@@ -23,6 +23,56 @@ cd ~/config-bootstrap
 config-doctor
 ```
 
+## Перенос OpenCode на другую машину
+
+OpenCode-настройки хранятся в dotfiles и после bootstrap восстанавливаются
+вместе с `$HOME`:
+
+```text
+~/.config/opencode/opencode.json
+~/.config/opencode/AGENTS.md
+~/.config/opencode/agents/
+~/.config/opencode/commands/finish.md
+```
+
+На новой машине:
+
+1. Установи OpenCode.
+2. Установи `codebase-memory-mcp` и проверь, что команда доступна:
+
+   ```bash
+   command -v codebase-memory-mcp
+   ```
+
+3. Выполни bootstrap из раздела выше.
+4. Перезапусти shell и проверь конфигурацию:
+
+   ```bash
+   check-config
+   config-doctor
+   ```
+
+5. Запусти OpenCode и проверь доступность моделей:
+
+   ```text
+   openai/gpt-6.1-sol
+   opencode/gemini-3.1-pro
+   opencode/claude-sonnet-5-5
+   ```
+
+6. Отдельно подключи нужные провайдеры и Context7. OAuth, API-токены,
+   `service.json`, локальные кэши и `node_modules` не переносятся через git.
+7. Клонируй Graph отдельно и запускай OpenCode из корня репозитория:
+
+   ```bash
+   cd ~/ghq/gitverse.ru/mafck_sct/Graph
+   opencode .
+   ```
+
+После этого доступны агенты `plan`, `build`, `explore`, `reviewer` и команда
+`/finish`. Команда `/finish` запускает сфокусированные проверки и ревью текущего
+diff, но не делает commit, push, merge, reset или clean.
+
 При первом запуске `nvim` автоматически:
 - установит lazy.nvim
 - скачает все плагины
