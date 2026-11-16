@@ -1,6 +1,7 @@
 if status is-interactive
+    # `home` is a function (functions/home.fish), not an alias here -- it
+    # guards against running add/mv/rm from outside $HOME.
     if test -d "$HOME/.cfg"
-        alias home 'git --work-tree=$HOME --git-dir=$HOME/.cfg'
         alias lgh 'lazygit --work-tree=$HOME --git-dir=$HOME/.cfg'
     end
 
@@ -12,6 +13,7 @@ if status is-interactive
     alias lg 'lazygit'
 
     abbr -a q exit
+    abbr -a cls clear
     abbr -a cat bat
     abbr -a vf 'nvim ~/.config/fish/config.fish'
     abbr -a vk 'nvim ~/.config/kitty/kitty.conf'

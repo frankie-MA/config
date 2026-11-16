@@ -1,0 +1,99 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "openai/gpt-6.1-sol",
+  "default_agent": "plan",
+  "permissions": [
+    {
+      "action": "external_directory",
+      "resource": "*",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "*",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "git push *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git reset --hard *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git clean -fd*",
+      "effect": "deny"
+    }
+  ],
+  "agents": {
+    "plan": {
+      "description": "Read-only architectural planning and impact analysis",
+      "mode": "primary",
+      "model": "openai/gpt-6.1-sol",
+      "permissions": [
+        {
+          "action": "edit",
+          "resource": "*",
+          "effect": "deny"
+        }
+      ]
+    },
+    "build": {
+      "description": "Implement scoped changes with tests and report results",
+      "mode": "primary",
+      "model": "openai/gpt-6.1-sol",
+      "permissions": [
+        {
+          "action": "edit",
+          "resource": "*",
+          "effect": "allow"
+        }
+      ]
+    },
+    "explore": {
+      "description": "Inexpensive read-only repository exploration",
+      "mode": "subagent",
+      "model": "opencode/gemini-3.1-pro",
+      "permissions": [
+        {
+          "action": "edit",
+          "resource": "*",
+          "effect": "deny"
+        }
+      ]
+    },
+    "reviewer": {
+      "description": "Independent code review of diff, risks and tests; no edits",
+      "mode": "subagent",
+      "model": "opencode/claude-sonnet-5-5",
+      "permissions": [
+        {
+          "action": "edit",
+          "resource": "*",
+          "effect": "deny"
+        }
+      ]
+    }
+  },
+  "mcp": {
+    "codebase-memory-mcp": {
+      "enabled": true,
+      "type": "local",
+      "command": [
+        "codebase-memory-mcp"
+      ]
+    },
+    "context7": {
+      "type": "remote",
+      "url": "https://mcp.context7.com/mcp",
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer {env:CONTEXT7_API_KEY}"
+      }
+    }
+  }
+}
