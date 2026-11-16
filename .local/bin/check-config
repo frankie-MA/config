@@ -36,6 +36,23 @@ for file in "$repo"/install/*.sh; do
     sh -n "$file"
 done
 
+# Parse Python entry points without creating bytecode in the home work-tree.
+if command -v python3 >/dev/null 2>&1; then
+    python3 - "$repo" <<'PYTHON'
+import ast
+import json
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+for path in (root / '.local/bin').iterdir():
+    if path.is_file() and path.read_bytes().startswith(b'#!/usr/bin/env python3'):
+        ast.parse(path.read_text(), filename=str(path))
+manifest = root / '.config/dotfiles-ai/environment.json'
+if manifest.exists():
+    json.loads(manifest.read_text())
+PYTHON
+fi
+
 fish -n "$repo/.config/fish/config.fish" "$repo"/.config/fish/conf.d/*.fish
 nvim --headless '+qa' >/dev/null 2>&1
 starship print-config >/dev/null

@@ -9,3 +9,12 @@
 - `~/.config/nvim/lazy-lock.json` is not tracked. Each OS can resolve plugin versions locally.
 - Secrets, tokens, private hostnames, and machine-only paths are not tracked.
 - Finish config changes with `check-config`, then `sync-config`.
+
+## AI-клиенты
+
+- Публичный репозиторий хранит `.config/dotfiles-ai/`, установщики и workflow.
+- Рабочие конфиги Codex/Claude/OpenCode, токены, кэш, графы и бинарники локальные.
+- Новые серверы добавляются с резервной копией, существующие значения сохраняются.
+- Установку и проверку выполняй по `docs/ai-environment.md`.
+- Перед коммитом проверяй diff на секреты; `.gitignore` не защищает старые tracked-файлы.
+- `check-config` не заменяет MCP handshake и проверку обнаружения навыков клиентом.

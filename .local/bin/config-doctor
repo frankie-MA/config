@@ -2,6 +2,13 @@
 
 set -eu
 
+check_ai=0
+case "${1:-}" in
+    --ai) check_ai=1 ;;
+    "") ;;
+    *) printf 'usage: config-doctor [--ai]\n' >&2; exit 2 ;;
+esac
+
 home_git="${HOME_GIT_DIR:-$HOME/.cfg}"
 home_work_tree="${HOME_WORK_TREE:-$HOME}"
 
@@ -79,13 +86,9 @@ else
     printf 'skip: SMB mirror not mounted or not configured\n'
 fi
 
-claude_json="${CLAUDE_JSON:-$HOME/.claude.json}"
-if command -v jq >/dev/null 2>&1 && [ -f "$claude_json" ]; then
-    for server in filesystem github memory sequential-thinking tree-sitter; do
-        jq -e --arg s "$server" '.mcpServers[$s]' "$claude_json" >/dev/null 2>&1 ||
-            fail "missing claude mcp server: $server (run setup-claude-mcp)"
-    done
-    ok "claude mcp servers configured"
+if [ "$check_ai" -eq 1 ]; then
+    command -v setup-ai-env >/dev/null 2>&1 || fail "missing setup-ai-env"
+    setup-ai-env --check || fail "AI environment incomplete (see docs/ai-environment.md)"
 else
-    printf 'skip: jq or ~/.claude.json not available\n'
+    printf 'skip: AI presence check is explicit (config-doctor --ai or setup-ai-env --check)\n'
 fi

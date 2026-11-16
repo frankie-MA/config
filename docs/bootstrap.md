@@ -53,3 +53,11 @@ After bootstrap, restart the shell and run:
 config-doctor
 nvim
 ```
+
+## AI-клиенты после dotfiles
+
+Следуй [AI-окружению](ai-environment.md): сначала клиенты, Python/Node/GitHub CLI,
+браузер и платформенная сборка Codebase Memory; затем явные этапы
+`setup-ai-env`. Авторизация выполняется локально на каждой машине.
+Для готовой новой машины доступен флаг bootstrap `--ai`; обычный bootstrap
+не меняет настройки AI-клиентов. Не копируй живые конфиги и токены из другой ОС.

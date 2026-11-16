@@ -41,13 +41,24 @@ home commit -m "update kitty"         # закоммитить
 check-config                          # быстрые syntax/runtime проверки
 sync-config                           # ff-only pull, push origin, push SMB, doctor
 config-doctor                         # проверить fish/nvim/starship/kitty/repo mirror/claude MCP
-setup-claude-mcp                      # (пере)накатить MCP-серверы в ~/.claude.json
+setup-claude-mcp                      # добавить недостающие MCP только Claude
 ```
 
-`setup-claude-mcp` вызывается автоматически при `bootstrap.sh`, но идемпотентен — можно
-перезапускать вручную, чтобы добавить новые серверы или починить локальный `~/.claude.json`.
-`~/.claude.json` не трекается (там же токены/сессии/кэш Claude Code), поэтому серверы туда
-подмешиваются скриптом, а не хранятся в git.
+AI-окружение Codex, Claude Code и OpenCode восстанавливается отдельно:
+
+```sh
+setup-ai-env                         # план без изменений
+setup-ai-env --install-servers       # официальный GitHub MCP + Playwright
+setup-ai-env --install-skills        # Matt Pocock для трёх клиентов
+setup-ai-env --apply                 # безопасно добавить недостающие настройки
+setup-ai-env --check                 # проверить файлы и записи
+```
+
+Полный состав MCP, навыков, моделей, авторизация, различия Linux/macOS и
+ограничения проверки: [AI-окружение](docs/ai-environment.md).
+Рабочие конфиги и секреты остаются локальными. Общий workflow для личных
+репозиториев отслеживается в `ghq/AGENTS.md`, для Claude — `ghq/CLAUDE.md`.
+`setup-claude-mcp` оставлен как совместимая команда для одного клиента.
 
 `lazy-lock.json` не трекается: каждая ОС держит свои версии плагинов локально.
 Правила repo: `docs/policy.md`.

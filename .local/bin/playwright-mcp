@@ -1,0 +1,20 @@
+#!/usr/bin/env python3
+"""Launch isolated Playwright MCP on Linux/macOS without personal browser state."""
+import json
+import os
+from pathlib import Path
+import shutil
+import sys
+
+root = Path(__file__).resolve().parents[2]
+config = json.loads((root / '.config/dotfiles-ai/environment.json').read_text())['mcp']['playwright']
+args = ['npx', '-y', config['package'] + '@' + config['version'], '--isolated', '--headless']
+browser = os.environ.get('PLAYWRIGHT_MCP_EXECUTABLE_PATH')
+if not browser:
+    candidates = [shutil.which(name) for name in ('chromium', 'chromium-browser', 'google-chrome', 'google-chrome-stable')]
+    candidates += ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/Applications/Chromium.app/Contents/MacOS/Chromium']
+    browser = next((p for p in candidates if p and Path(p).is_file()), None)
+if not browser or not os.access(browser, os.X_OK):
+    sys.exit('Install Chromium/Chrome or set PLAYWRIGHT_MCP_EXECUTABLE_PATH to its executable.')
+args += ['--executable-path', browser, *sys.argv[1:]]
+os.execvp('npx', args)

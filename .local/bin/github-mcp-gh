@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+"""Start official GitHub MCP using existing, machine-local gh authentication."""
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+root = Path(__file__).resolve().parents[2]
+manifest = json.loads((root / '.config/dotfiles-ai/environment.json').read_text())
+version = manifest['mcp']['github']['version']
+binary = Path.home() / f'.local/lib/github-mcp-server/{version}/github-mcp-server'
+if not binary.is_file():
+    sys.exit('GitHub MCP missing: run setup-ai-env --install-servers')
+result = subprocess.run(['gh', 'auth', 'token', '--hostname', 'github.com'], capture_output=True, text=True)
+if result.returncode or not result.stdout.strip():
+    sys.exit('GitHub MCP: run gh auth login --hostname github.com locally.')
+env = dict(os.environ)
+env['GITHUB_PERSONAL_ACCESS_TOKEN'] = result.stdout.strip()
+args = [str(binary), 'stdio', '--toolsets=repos,issues,pull_requests,actions,users', *sys.argv[1:]]
+os.execve(str(binary), args, env)
