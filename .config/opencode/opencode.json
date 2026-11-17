@@ -141,6 +141,8 @@
         "type": "local",
         "command": [
           "uvx",
+          "--with",
+          "mcp<2",
           "mcp-server-tree-sitter"
         ]
       },
