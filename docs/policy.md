@@ -7,6 +7,9 @@
   - `~/.config/kitty/local.conf`
   - `~/.config/nvim/lua/local.lua`
 - `~/.config/nvim/lazy-lock.json` is not tracked. Each OS can resolve plugin versions locally.
+- The selected Catppuccin flavour is local: `~/.config/kitty/catppuccin-current.conf`
+  and `~/.config/nvim/lua/theme-flavour.lua` are ignored. When absent, both
+  Kitty and Neovim use Mocha; the shared theme switcher creates these files.
 - Secrets, tokens, private hostnames, and machine-only paths are not tracked.
 - Finish config changes with `check-config`, then `sync-config`.
 

@@ -25,7 +25,7 @@ command -v fzf >/dev/null 2>&1 || {
     exit 1
 }
 
-initial=$(sed -n 's/.*Current flavour: \([A-Za-z]*\).*/\1/p' "$current_theme" | head -n 1)
+initial=$(sed -n 's/.*Current flavour: \([A-Za-z]*\).*/\1/p' "$current_theme" 2>/dev/null | head -n 1)
 initial=${initial:-Mocha}
 
 choice=$(

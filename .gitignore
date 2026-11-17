@@ -2,6 +2,8 @@
 .config/fish/conf.d/99-local.fish
 .config/kitty/local.conf
 .config/nvim/lua/local.lua
+.config/kitty/catppuccin-current.conf
+.config/nvim/lua/theme-flavour.lua
 
 # AI clients: local credentials, state, generated configs and downloaded tools
 /.claude.json
