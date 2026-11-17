@@ -80,19 +80,86 @@
     }
   },
   "mcp": {
-    "codebase-memory-mcp": {
-      "enabled": true,
-      "type": "local",
-      "command": [
-        "codebase-memory-mcp"
-      ]
-    },
-    "context7": {
-      "type": "remote",
-      "url": "https://mcp.context7.com/mcp",
-      "enabled": true,
-      "headers": {
-        "Authorization": "Bearer {env:CONTEXT7_API_KEY}"
+    "servers": {
+      "codebase-memory-mcp": {
+        "enabled": true,
+        "type": "local",
+        "command": [
+          "codebase-memory-mcp"
+        ]
+      },
+      "context7": {
+        "type": "remote",
+        "url": "https://mcp.context7.com/mcp",
+        "enabled": true,
+        "headers": {
+          "Authorization": "Bearer {env:CONTEXT7_API_KEY}"
+        }
+      },
+      "filesystem": {
+        "enabled": true,
+        "type": "local",
+        "command": [
+          "npx",
+          "-y",
+          "@modelcontextprotocol/server-filesystem",
+          "{env:HOME}"
+        ]
+      },
+      "github": {
+        "enabled": true,
+        "type": "local",
+        "command": [
+          "npx",
+          "-y",
+          "@modelcontextprotocol/server-github"
+        ],
+        "environment": {
+          "GITHUB_TOKEN": "{env:GITHUB_TOKEN}"
+        }
+      },
+      "memory": {
+        "enabled": true,
+        "type": "local",
+        "command": [
+          "npx",
+          "-y",
+          "@modelcontextprotocol/server-memory"
+        ]
+      },
+      "sequential-thinking": {
+        "enabled": true,
+        "type": "local",
+        "command": [
+          "npx",
+          "-y",
+          "@modelcontextprotocol/server-sequential-thinking"
+        ]
+      },
+      "tree-sitter": {
+        "enabled": true,
+        "type": "local",
+        "command": [
+          "uvx",
+          "mcp-server-tree-sitter"
+        ]
+      },
+      "homebrew": {
+        "enabled": true,
+        "type": "local",
+        "command": [
+          "brew",
+          "mcp-server"
+        ]
+      },
+      "playwright": {
+        "enabled": true,
+        "type": "local",
+        "command": [
+          "npx",
+          "-y",
+          "@playwright/mcp@latest"
+        ]
       }
     }
   }
