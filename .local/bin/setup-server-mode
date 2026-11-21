@@ -1,0 +1,650 @@
+#!/bin/sh
+# setup-server-mode -- keep an Omarchy laptop working unattended as a server.
+#
+# Omarchy already autologins into Hyprland by default, so this covers the parts
+# it leaves to the user: verifying that autologin actually targets the right
+# account and session, ignoring the lid, blocking suspend entirely, lingering
+# user services, sshd, docker, a weekly package update timer, and the parts that
+# decide whether the machine stays reachable with nobody sitting at it: SDDM
+# relogin, a wi-fi profile that autoconnects with a system-stored secret, and
+# no idle lock.
+#
+# Every step is idempotent. Files are compared before they are written, and the
+# previous version is kept next to the file as <file>.bak.<epoch>. Nothing is
+# changed without --apply, and --apply requires root.
+#
+# Usage: setup-server-mode [--check|--apply|--diff] [options]
+#
+#   --check           report only, exit 1 if anything is missing (default)
+#   --apply           write the changes (root only)
+#   --diff            like --check, plus unified diffs of pending file changes
+#   --force-user      rewrite SDDM autologin for the invoking user
+#   --no-ssh-rule     do not manage the ufw rule for 22/tcp
+#   --enable-ufw      also switch ufw on when it is inactive (allow other
+#                     ports, WireGuard for one, before using this)
+#   --without-docker  skip every docker step
+#   --without-updates skip the weekly package update timer
+#   --ufw-docker      install ufw-docker rules (docker bypasses ufw otherwise)
+#   --keep-wifi       do not manage the wi-fi profile
+#   --keep-idle-lock  keep locking the screen on idle
+#
+# Exit codes: 0 everything in place, 1 drift found or a step failed,
+# 2 applied and a reboot (or an SDDM restart) is needed to take effect.
+
+set -eu
+
+PROG=${0##*/}
+
+MODE=check
+SHOW_DIFF=0
+FORCE_USER=0
+SSH_RULE=1
+ENABLE_UFW=0
+WANT_WIFI=1
+KEEP_IDLE_LOCK=0
+WANT_DOCKER=1
+WANT_UPDATES=1
+UFW_DOCKER=0
+
+REAL_USER=${SUDO_USER:-$(id -un)}
+REAL_GROUP=$(id -gn "$REAL_USER" 2>/dev/null) || REAL_GROUP=$REAL_USER
+REAL_HOME=$(getent passwd "$REAL_USER" 2>/dev/null | cut -d: -f6) || REAL_HOME=
+[ -n "$REAL_HOME" ] || REAL_HOME=/home/$REAL_USER
+
+OK_COUNT=0
+DRIFT=0
+FIXED=0
+WARNINGS=0
+REBOOT=0
+SYNC_RC=0
+
+usage() {
+    cat <<'EOF'
+Keep an Omarchy laptop working unattended as a server.
+
+Usage: setup-server-mode [--check|--apply|--diff] [options]
+
+  --check           report only, exit 1 if anything is missing (default)
+  --apply           write the changes (root only)
+  --diff            like --check, plus unified diffs of pending file changes
+  --force-user      rewrite SDDM autologin for the invoking user
+  --no-ssh-rule     do not manage the ufw rule for 22/tcp
+  --enable-ufw      also switch ufw on when it is inactive (allow other
+                    ports, WireGuard for one, before using this)
+  --without-docker  skip every docker step
+  --without-updates skip the weekly package update timer
+  --ufw-docker      install ufw-docker rules (docker bypasses ufw otherwise)
+  --keep-wifi       do not manage the wi-fi profile
+  --keep-idle-lock  keep locking the screen on idle
+
+Exit codes: 0 everything in place, 1 drift found or a step failed,
+2 applied and a reboot (or an SDDM restart) is needed to take effect.
+EOF
+}
+
+die() {
+    printf '%s: %s\n' "$PROG" "$*" >&2
+    exit 1
+}
+
+report() { # status item detail
+    case $1 in
+        OK) OK_COUNT=$((OK_COUNT + 1)) ;;
+        CHANGE) DRIFT=$((DRIFT + 1)) ;;
+        FIXED) FIXED=$((FIXED + 1)) ;;
+        WARN) WARNINGS=$((WARNINGS + 1)) ;;
+    esac
+    printf '%-8s %-24s %s\n' "$1" "$2" "$3"
+}
+
+# Write stdin to <path> unless it already matches. Returns 0 when the file is
+# already correct, 1 when it differs (check mode) and 2 when it was written.
+sync_file() { # path mode
+    sy_path=$1
+    sy_mode=$2
+    sy_tmp=$(mktemp) || die 'mktemp failed'
+    cat >"$sy_tmp"
+
+    sy_same=0
+    if [ -f "$sy_path" ]; then
+        sy_current_mode=$(stat -c %a "$sy_path" 2>/dev/null) || sy_current_mode=
+        sy_current_mode=${sy_current_mode#0}
+        sy_want_mode=${sy_mode#0}
+        if cmp -s "$sy_path" "$sy_tmp" && [ "$sy_current_mode" = "$sy_want_mode" ]; then
+            sy_same=1
+        fi
+    fi
+
+    if [ "$sy_same" -eq 1 ]; then
+        rm -f "$sy_tmp"
+        return 0
+    fi
+
+    if [ "$MODE" = check ]; then
+        if [ "$SHOW_DIFF" -eq 1 ]; then
+            sy_old=$sy_path
+            [ -f "$sy_path" ] || sy_old=/dev/null
+            diff -u "$sy_old" "$sy_tmp" 2>/dev/null || true
+        fi
+        rm -f "$sy_tmp"
+        return 1
+    fi
+
+    if [ -f "$sy_path" ]; then
+        cp -a "$sy_path" "$sy_path.bak.$(date +%s)"
+    fi
+    mkdir -p "${sy_path%/*}"
+    install -m "$sy_mode" "$sy_tmp" "$sy_path"
+    rm -f "$sy_tmp"
+    return 2
+}
+
+# Run sync_file for a content function and print one row for the result.
+sync_and_report() { # item path mode content-function
+    sr_item=$1
+    sr_path=$2
+    sr_mode=$3
+    if "$4" | sync_file "$sr_path" "$sr_mode"; then sr_rc=0; else sr_rc=$?; fi
+    case $sr_rc in
+        0) report OK "$sr_item" "$sr_path" ;;
+        1) report CHANGE "$sr_item" "$sr_path would be written" ;;
+        2) report FIXED "$sr_item" "$sr_path written" ;;
+    esac
+    SYNC_RC=$sr_rc
+}
+
+detect_session() {
+    for ds_name in omarchy.desktop hyprland-uwsm.desktop hyprland.desktop; do
+        for ds_dir in /usr/local/share/wayland-sessions /usr/share/wayland-sessions; do
+            if [ -f "$ds_dir/$ds_name" ]; then
+                printf '%s\n' "$ds_name"
+                return 0
+            fi
+        done
+    done
+    return 1
+}
+
+wayland_session_running() {
+    for ws_id in $(loginctl list-sessions --no-legend 2>/dev/null | awk '{print $1}'); do
+        if [ "$(loginctl show-session "$ws_id" -p Type --value 2>/dev/null)" = wayland ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# shellcheck disable=SC2329 # passed to sync_and_report by name
+logind_content() {
+    cat <<'EOF'
+[Login]
+HandleLidSwitch=ignore
+HandleLidSwitchExternalPower=ignore
+HandleLidSwitchDocked=ignore
+HandleSuspendKey=ignore
+IdleAction=ignore
+EOF
+}
+
+# shellcheck disable=SC2329 # passed to sync_and_report by name
+sleep_content() {
+    cat <<'EOF'
+[Sleep]
+AllowSuspend=no
+AllowHibernation=no
+AllowHybridSleep=no
+AllowSuspendThenHibernate=no
+EOF
+}
+
+# shellcheck disable=SC2329 # passed to sync_and_report by name
+update_service_unit() {
+    cat <<'EOF'
+[Unit]
+Description=Server mode: system package update
+Documentation=man:pacman(8)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=idle
+ExecStart=/bin/sh -c 'if [ -x /usr/bin/omarchy-update-system-pkgs ]; then exec /usr/bin/omarchy-update-system-pkgs; fi; exec /usr/bin/pacman -Syyu --noconfirm'
+EOF
+}
+
+# shellcheck disable=SC2329 # passed to sync_and_report by name
+update_timer_unit() {
+    cat <<'EOF'
+[Unit]
+Description=Server mode: weekly system package update
+
+[Timer]
+OnCalendar=Sun *-*-* 04:00:00
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+}
+
+item_autologin() {
+    ia_conf=/etc/sddm.conf.d/autologin.conf
+    if ia_session=$(detect_session); then :; else
+        report WARN autologin 'no wayland session found, cannot check autologin'
+        return 0
+    fi
+
+    ia_user=$(sed -n 's/^User=//p' "$ia_conf" 2>/dev/null | tail -n 1) || ia_user=
+    ia_current=$(sed -n 's/^Session=//p' "$ia_conf" 2>/dev/null | tail -n 1) || ia_current=
+    ia_relogin=$(sed -n 's/^Relogin=//p' "$ia_conf" 2>/dev/null | tail -n 1) || ia_relogin=
+
+    if [ "$ia_user" = "$REAL_USER" ] && [ "$ia_current" = "$ia_session" ] &&
+        [ "$ia_relogin" = true ]; then
+        report OK autologin "User=$REAL_USER Session=$ia_session Relogin=true"
+    elif [ -n "$ia_user" ] && [ "$ia_user" != "$REAL_USER" ] && [ "$FORCE_USER" -eq 0 ]; then
+        report WARN autologin "already autologins '$ia_user' (use --force-user to change)"
+        DRIFT=$((DRIFT + 1))
+    else
+        # Relogin=true makes SDDM start the session again when it ends, so a
+        # compositor crash or a stray logout does not leave the box sitting at
+        # the greeter with no network.
+        if printf '[Autologin]\nUser=%s\nSession=%s\nRelogin=true\n' \
+            "$REAL_USER" "$ia_session" | sync_file "$ia_conf" 0644; then ia_rc=0; else ia_rc=$?; fi
+        case $ia_rc in
+            0) report OK autologin "User=$REAL_USER Session=$ia_session Relogin=true" ;;
+            1) report CHANGE autologin "would set User=$REAL_USER Session=$ia_session Relogin=true" ;;
+            2)
+                report FIXED autologin "set User=$REAL_USER Session=$ia_session Relogin=true"
+                REBOOT=1
+                ;;
+        esac
+    fi
+
+    if [ "$MODE" = check ] && wayland_session_running; then
+        report OK autologin-now 'a wayland session is already running'
+    fi
+}
+
+item_logind() {
+    sync_and_report lid-suspend /etc/systemd/logind.conf.d/30-no-lid-suspend.conf 0644 logind_content
+    if [ "$SYNC_RC" -eq 2 ]; then
+        REBOOT=1
+    fi
+    return 0
+}
+
+item_nosleep() {
+    sync_and_report no-suspend /etc/systemd/sleep.conf.d/90-server-no-sleep.conf 0644 sleep_content
+    if [ "$SYNC_RC" -eq 2 ]; then
+        # logind reads the sleep policy when it starts, so a reboot is needed
+        # before AllowSuspend=no takes effect. The masks below work at once.
+        REBOOT=1
+    fi
+
+    ns_pending=
+    for ns_target in sleep.target suspend.target hibernate.target hybrid-sleep.target; do
+        ns_state=$(systemctl is-enabled "$ns_target" 2>/dev/null || true)
+        if [ "$ns_state" != masked ]; then
+            ns_pending="$ns_pending $ns_target"
+        fi
+    done
+
+    if [ -z "$ns_pending" ]; then
+        report OK sleep-targets 'every sleep target is masked'
+    elif [ "$MODE" = apply ]; then
+        # shellcheck disable=SC2086 # the list is space separated on purpose
+        systemctl mask $ns_pending >/dev/null
+        report FIXED sleep-targets "masked:$ns_pending"
+    else
+        report CHANGE sleep-targets "would mask:$ns_pending"
+    fi
+    return 0
+}
+
+item_linger() {
+    ln_state=$(loginctl show-user "$REAL_USER" -p Linger --value 2>/dev/null || true)
+    if [ "$ln_state" = yes ]; then
+        report OK linger "$REAL_USER lingers, user services start at boot"
+    elif [ "$MODE" = apply ]; then
+        loginctl enable-linger "$REAL_USER"
+        report FIXED linger "enabled for $REAL_USER"
+    else
+        report CHANGE linger "would enable linger for $REAL_USER"
+    fi
+    return 0
+}
+
+item_sshd() {
+    sd_enabled=$(systemctl is-enabled sshd 2>/dev/null || true)
+    sd_active=$(systemctl is-active sshd 2>/dev/null || true)
+    if [ "$sd_enabled" = enabled ] && [ "$sd_active" = active ]; then
+        report OK sshd 'enabled and active'
+    elif [ "$MODE" = apply ]; then
+        systemctl enable --now sshd >/dev/null
+        report FIXED sshd 'enabled and started'
+    else
+        report CHANGE sshd "would enable (enabled=$sd_enabled active=$sd_active)"
+    fi
+
+    if command -v ss >/dev/null 2>&1 && ss -tln 2>/dev/null | grep -q ':22 '; then
+        report OK sshd-port 'listening on tcp/22'
+    else
+        report WARN sshd-port 'nothing listens on tcp/22'
+    fi
+    return 0
+}
+
+item_docker() {
+    if [ "$WANT_DOCKER" -eq 0 ]; then
+        report SKIP docker '--without-docker'
+        return 0
+    fi
+    if ! command -v docker >/dev/null 2>&1; then
+        report WARN docker 'docker is not installed'
+        return 0
+    fi
+
+    dk_enabled=$(systemctl is-enabled docker 2>/dev/null || true)
+    dk_active=$(systemctl is-active docker 2>/dev/null || true)
+    if [ "$dk_enabled" = enabled ] && [ "$dk_active" = active ]; then
+        report OK docker 'enabled and active'
+    elif [ "$MODE" = apply ]; then
+        systemctl enable --now docker >/dev/null
+        report FIXED docker 'enabled and started'
+    else
+        report CHANGE docker "would enable (enabled=$dk_enabled active=$dk_active)"
+    fi
+
+    case " $(id -nG "$REAL_USER" 2>/dev/null || true) " in
+        *' docker '*)
+            report OK docker-group "$REAL_USER is in group docker"
+            ;;
+        *)
+            if [ "$MODE" = apply ]; then
+                usermod -aG docker "$REAL_USER"
+                report FIXED docker-group "added $REAL_USER to group docker (re-login)"
+            else
+                report CHANGE docker-group "would add $REAL_USER to group docker"
+            fi
+            ;;
+    esac
+
+    if grep -q 'BEGIN UFW AND DOCKER' /etc/ufw/after.rules 2>/dev/null; then
+        report OK ufw-docker 'docker traffic is filtered by ufw'
+    elif [ "$UFW_DOCKER" -eq 1 ] && [ "$MODE" = apply ]; then
+        if command -v ufw-docker >/dev/null 2>&1; then
+            ufw-docker install >/dev/null
+            ufw reload >/dev/null
+            report FIXED ufw-docker 'installed ufw-docker rules'
+        else
+            report WARN ufw-docker 'ufw-docker is not installed'
+        fi
+    else
+        report WARN ufw-docker 'docker publishes ports past ufw (run --apply --ufw-docker)'
+    fi
+    return 0
+}
+
+item_updates() {
+    if [ "$WANT_UPDATES" -eq 0 ]; then
+        report SKIP updates '--without-updates'
+        return 0
+    fi
+
+    up_changed=0
+    sync_and_report update-service /etc/systemd/system/setup-server-mode-update.service 0644 update_service_unit
+    if [ "$SYNC_RC" -eq 2 ]; then
+        up_changed=1
+    fi
+    sync_and_report update-timer /etc/systemd/system/setup-server-mode-update.timer 0644 update_timer_unit
+    if [ "$SYNC_RC" -eq 2 ]; then
+        up_changed=1
+    fi
+
+    up_enabled=$(systemctl is-enabled setup-server-mode-update.timer 2>/dev/null || true)
+    if [ "$up_changed" -eq 0 ] && [ "$up_enabled" = enabled ]; then
+        report OK updates 'weekly timer enabled (Sun 04:00 +1h jitter)'
+    elif [ "$MODE" = apply ]; then
+        systemctl daemon-reload
+        systemctl enable --now setup-server-mode-update.timer >/dev/null
+        report FIXED updates 'weekly timer enabled (Sun 04:00 +1h jitter)'
+    else
+        report CHANGE updates 'would install and enable the weekly timer'
+    fi
+    return 0
+}
+
+item_ufw() {
+    if [ "$SSH_RULE" -eq 0 ]; then
+        report SKIP ssh-rule '--no-ssh-rule'
+        return 0
+    fi
+    if ! command -v ufw >/dev/null 2>&1; then
+        report WARN ssh-rule 'ufw is not installed'
+        return 0
+    fi
+
+    uf_status=$(ufw status 2>/dev/null || true)
+    case $uf_status in
+        *'Status: active'*)
+            if printf '%s\n' "$uf_status" | grep -Eq '^(22/tcp|OpenSSH)'; then
+                report OK ssh-rule '22/tcp allowed, ufw active'
+            elif [ "$MODE" = apply ]; then
+                ufw allow 22/tcp >/dev/null
+                report FIXED ssh-rule 'allowed 22/tcp in ufw'
+            else
+                report CHANGE ssh-rule 'would allow 22/tcp in ufw'
+            fi
+            ;;
+        *'Status: inactive'*)
+            if [ "$ENABLE_UFW" -eq 1 ] && [ "$MODE" = apply ]; then
+                # Allow first, enable second: enabling a default-deny firewall
+                # before the rule exists would lock out this very session, and
+                # any other port (WireGuard, for one) has to be allowed by hand.
+                ufw allow 22/tcp >/dev/null
+                ufw --force enable >/dev/null
+                report FIXED ssh-rule 'ufw enabled with 22/tcp allowed'
+            else
+                report WARN ssh-rule 'ufw inactive, not enabling it here (--enable-ufw)'
+            fi
+            ;;
+        *)
+            report WARN ssh-rule 'cannot read the ufw state without root'
+            ;;
+    esac
+    return 0
+}
+
+item_wifi() {
+    if [ "$WANT_WIFI" -eq 0 ]; then
+        report SKIP wifi '--keep-wifi'
+        return 0
+    fi
+    if ! command -v nmcli >/dev/null 2>&1; then
+        report WARN wifi 'NetworkManager is not installed'
+        return 0
+    fi
+
+    wf_id=$(nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device status 2>/dev/null |
+        awk -F: '$2 == "wifi" && $3 == "connected" { print $4; exit }') || wf_id=
+    if [ -z "$wf_id" ]; then
+        report WARN wifi 'no connected wi-fi profile, nothing to make autoconnect'
+        return 0
+    fi
+
+    wf_auto=$(nmcli -t -f connection.autoconnect connection show "$wf_id" 2>/dev/null | cut -d: -f2) || wf_auto=
+    wf_retries=$(nmcli -t -f connection.autoconnect-retries connection show "$wf_id" 2>/dev/null | cut -d: -f2) || wf_retries=
+
+    if [ "$wf_auto" = yes ] && [ "$wf_retries" = 0 ]; then
+        report OK wifi-autoconnect "$wf_id connects on its own, retries forever"
+    elif [ "$MODE" = apply ]; then
+        nmcli connection modify "$wf_id" connection.autoconnect yes connection.autoconnect-retries 0
+        report FIXED wifi-autoconnect "$wf_id connects on its own, retries forever"
+    else
+        report CHANGE wifi-autoconnect "would enable autoconnect on $wf_id (autoconnect=$wf_auto retries=$wf_retries)"
+    fi
+
+    # The secret has to be usable before anyone logs in. psk-flags=0 keeps it in
+    # /etc/NetworkManager, where root reads it at boot; anything else ties the
+    # key to the session keyring, so the network only appears after a password.
+    wf_flags=$(nmcli -t -f 802-11-wireless-security.psk-flags connection show "$wf_id" 2>/dev/null | cut -d: -f2) || wf_flags=
+    wf_psk=$(nmcli -t -f 802-11-wireless-security.psk connection show "$wf_id" 2>/dev/null | cut -d: -f2-) || wf_psk=
+    if [ -z "$wf_flags" ]; then
+        report WARN wifi-secret 'cannot read the wi-fi secret flags without root'
+    elif [ "$wf_flags" != 0 ]; then
+        if [ "$MODE" = apply ]; then
+            nmcli connection modify "$wf_id" wifi-sec.psk-flags 0
+            report WARN wifi-secret "flags set, now re-enter the key once: nmcli --ask connection up '$wf_id'"
+        else
+            report CHANGE wifi-secret "password lives in the keyring (flags=$wf_flags), a login is needed first"
+        fi
+    elif [ -z "$wf_psk" ]; then
+        report WARN wifi-secret "no stored key in the profile, run: nmcli --ask connection up '$wf_id'"
+    else
+        report OK wifi-secret 'wi-fi key is stored system-wide'
+    fi
+    return 0
+}
+
+item_idle() {
+    if [ "$KEEP_IDLE_LOCK" -eq 1 ]; then
+        report SKIP idle-lock '--keep-idle-lock'
+        return 0
+    fi
+
+    id_file=$REAL_HOME/.local/state/omarchy/indicators/stay-awake
+    if [ -f "$id_file" ]; then
+        report OK idle-lock 'screen does not lock on idle'
+    elif [ "$MODE" = apply ]; then
+        install -d -o "$REAL_USER" -g "$REAL_GROUP" "${id_file%/*}"
+        install -o "$REAL_USER" -g "$REAL_GROUP" -m 0644 /dev/null "$id_file"
+        report FIXED idle-lock 'screen does not lock on idle'
+    else
+        report CHANGE idle-lock 'would disable the idle lock and screen saver'
+    fi
+    return 0
+}
+
+item_advisories() {
+    ad_ac=
+    for ad_ps in /sys/class/power_supply/*/online; do
+        [ -f "$ad_ps" ] || continue
+        if [ "$(cat "$ad_ps" 2>/dev/null)" = 1 ]; then
+            ad_ac=online
+        fi
+    done
+    if [ "$ad_ac" = online ]; then
+        report OK power 'on AC power'
+    else
+        report WARN power 'not on AC, a battery-only server will die'
+    fi
+
+    ad_eth=
+    for ad_net in /sys/class/net/*; do
+        [ -r "$ad_net/carrier" ] || continue
+        case ${ad_net##*/} in
+            lo | wl* | docker* | veth* | wg* | br-* | tun* | tailscale*) continue ;;
+        esac
+        if [ "$(cat "$ad_net/carrier" 2>/dev/null)" = 1 ]; then
+            ad_eth=${ad_net##*/}
+        fi
+    done
+    if [ -n "$ad_eth" ]; then
+        report OK ethernet "wired link up on $ad_eth"
+    else
+        report WARN ethernet 'no wired link, wi-fi only'
+    fi
+
+    if grep -q 'cryptdevice=' /proc/cmdline 2>/dev/null; then
+        report WARN luks 'boot needs the LUKS passphrase typed on a keyboard'
+    fi
+
+    if [ "$MODE" = check ] && command -v checkupdates >/dev/null 2>&1; then
+        if command -v timeout >/dev/null 2>&1; then
+            ad_upd=$(timeout 30 checkupdates 2>/dev/null | wc -l | tr -d ' ')
+            case $ad_upd in
+                '' | *[!0-9]*)
+                    report WARN updates-pending 'could not query pending updates'
+                    ;;
+                0)
+                    report OK updates-pending 'no package updates pending'
+                    ;;
+                *)
+                    report WARN updates-pending "$ad_upd package updates available"
+                    ;;
+            esac
+        fi
+    fi
+    return 0
+}
+
+while [ $# -gt 0 ]; do
+    case $1 in
+        --check) MODE=check ;;
+        --apply) MODE=apply ;;
+        --diff)
+            MODE=check
+            SHOW_DIFF=1
+            ;;
+        --force-user) FORCE_USER=1 ;;
+        --no-ssh-rule) SSH_RULE=0 ;;
+        --enable-ufw) ENABLE_UFW=1 ;;
+        --without-docker) WANT_DOCKER=0 ;;
+        --without-updates) WANT_UPDATES=0 ;;
+        --ufw-docker) UFW_DOCKER=1 ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        *)
+            die "unknown argument: $1 (try --help)"
+            ;;
+    esac
+    shift
+done
+
+if [ "$MODE" = apply ] && [ "$(id -u)" -ne 0 ]; then
+    die "--apply needs root: sudo $PROG --apply"
+fi
+
+if [ "$MODE" = apply ]; then
+    printf '%s: applying as %s on %s\n' "$PROG" "$REAL_USER" "$(hostname 2>/dev/null || printf unknown)"
+else
+    printf '%s: checking %s on %s\n' "$PROG" "$REAL_USER" "$(hostname 2>/dev/null || printf unknown)"
+fi
+printf '%-8s %-24s %s\n' STATUS ITEM DETAIL
+printf '%s\n' '------------------------------------------------------------------------'
+
+for sm_item in autologin logind nosleep linger sshd docker updates ufw wifi idle advisories; do
+    case $sm_item in
+        autologin) item_autologin ;;
+        logind) item_logind ;;
+        nosleep) item_nosleep ;;
+        linger) item_linger ;;
+        sshd) item_sshd ;;
+        docker) item_docker ;;
+        updates) item_updates ;;
+        ufw) item_ufw ;;
+        wifi) item_wifi ;;
+        idle) item_idle ;;
+        advisories) item_advisories ;;
+    esac
+done
+
+printf '%s\n' '------------------------------------------------------------------------'
+printf 'ok=%s drift=%s fixed=%s warnings=%s\n' "$OK_COUNT" "$DRIFT" "$FIXED" "$WARNINGS"
+
+if [ "$MODE" = check ] && [ "$DRIFT" -gt 0 ]; then
+    printf 'run: sudo %s --apply\n' "$PROG"
+    exit 1
+fi
+
+if [ "$MODE" = apply ] && [ "$REBOOT" -eq 1 ]; then
+    printf 'reboot (or restart sddm) is needed for the new session settings\n'
+    exit 2
+fi
+
+exit 0
