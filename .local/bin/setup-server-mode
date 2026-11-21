@@ -565,9 +565,14 @@ item_wireguard() {
         sync_and_report "wg-wait($wg_name)" "$wg_dropin" 0644 wireguard_dropin
         if [ "$SYNC_RC" -eq 2 ] && [ "$MODE" = apply ]; then
             systemctl daemon-reload
-            # The unit is usually "active (exited)" after a broken boot, so a
-            # plain start would be a no-op. Restart it and judge by the
-            # interface, not by the exit status of the cycle.
+            # A unit that came up broken still looks "active (exited)", so a
+            # plain start is a no-op. When the interface is gone there is
+            # nothing to tear down, so stop (it may fail), clear the failure,
+            # then restart, which acts as start on an inactive unit.
+            if ! ip link show "$wg_name" >/dev/null 2>&1; then
+                systemctl stop "$wg_unit" >/dev/null 2>&1 || true
+                systemctl reset-failed "$wg_unit" >/dev/null 2>&1 || true
+            fi
             systemctl restart "$wg_unit" >/dev/null 2>&1 || true
         fi
 
