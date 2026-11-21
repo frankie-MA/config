@@ -88,7 +88,10 @@ fi
 ok "home work tree clean"
 
 head_ref=$(git --git-dir="$home_git" rev-parse HEAD)
-origin_ref=$(git --git-dir="$home_git" rev-parse refs/remotes/origin/main 2>/dev/null || true)
+# --verify --quiet keeps stdout empty when the ref is missing; plain rev-parse
+# echoes the argument, which made a fresh `git clone --bare` (no remote-tracking
+# refs yet) compare a commit hash against the literal ref name and fail.
+origin_ref=$(git --git-dir="$home_git" rev-parse --verify --quiet refs/remotes/origin/main || true)
 if [ -n "$origin_ref" ] && [ "$head_ref" != "$origin_ref" ]; then
     fail "HEAD differs from origin/main"
 fi
@@ -96,8 +99,8 @@ ok "origin/main matches HEAD"
 
 if [ -n "$smb_remote" ] && [ -d "$smb_remote" ]; then
     test -w "$smb_remote/objects" || fail "SMB mirror is not writable: $smb_remote"
-    smb_ref=$(git -C "$smb_remote" rev-parse refs/heads/main)
-    if [ "$head_ref" != "$smb_ref" ]; then
+    smb_ref=$(git -C "$smb_remote" rev-parse --verify --quiet refs/heads/main || true)
+    if [ -z "$smb_ref" ] || [ "$head_ref" != "$smb_ref" ]; then
         fail "HEAD differs from SMB mirror"
     fi
     ok "SMB mirror matches HEAD"
