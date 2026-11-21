@@ -1,0 +1,291 @@
+#!/usr/bin/env python3
+"""Configure the AI environment without exporting client credentials."""
+import argparse
+import datetime
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import tomllib
+import urllib.request
+
+ROOT = Path(__file__).resolve().parents[2]
+DATA = ROOT / '.config/dotfiles-ai'
+
+
+def save(path, data):
+    """Back up exact bytes before a change; refuse symlinks, then replace atomically."""
+    if path.is_symlink() or any(p.is_symlink() for p in path.parents):
+        raise ValueError(f'Symlink requires manual review: {path}')
+    if path.exists() and path.read_bytes() == data:
+        return
+    if path.exists():
+        backup = Path.home() / '.config-backup/ai' / STAMP / path.relative_to(Path.home())
+        backup.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        for parent in [backup.parent, *backup.parents]:
+            if parent == Path.home():
+                break
+            parent.chmod(0o700)
+        shutil.copy2(path, backup)
+        backup.chmod(0o600)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp = tempfile.mkstemp(dir=path.parent, prefix='.' + path.name + '-')
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(data)
+        os.replace(temp, path)
+    finally:
+        if Path(temp).exists():
+            Path(temp).unlink()
+    print(f'updated: {path}')
+
+
+def merge_servers(existing, desired, replace_legacy=False):
+    result = dict(existing)
+    for name, value in desired.items():
+        if name not in result or (replace_legacy and name == 'github' and '@modelcontextprotocol/server-github' in result[name].get('args', [])):
+            result[name] = value
+        else:
+            print(f'preserved existing MCP: {name}')
+    return result
+
+
+def configure(clients, manifest, replace_legacy=False):
+    home = Path.home()
+    # Validate every selected config before changing any client.
+    for client in clients:
+        candidate = home / {'claude': '.claude.json', 'opencode': '.config/opencode/opencode.json', 'codex': '.codex/config.toml'}[client]
+        if client == 'opencode' and candidate.with_suffix('.jsonc').exists():
+            raise ValueError('OpenCode JSONC exists; merge manually.')
+        if candidate.exists():
+            if candidate.is_symlink():
+                raise ValueError('Config symlink requires manual review: ' + str(candidate))
+            tomllib.loads(candidate.read_text()) if client == 'codex' else json.loads(candidate.read_text())
+    commands = {
+        'codebase-memory-mcp': ['codebase-memory-mcp'],
+        'github': ['github-mcp-gh'],
+        'playwright': ['playwright-mcp'],
+    }
+    # Absolute local wrapper paths are generated here, never copied from another machine.
+    for key in ('github', 'playwright'):
+        commands[key] = [str(home / '.local/bin' / commands[key][0])]
+    if 'claude' in clients:
+        path = home / '.claude.json'
+        data = json.loads(path.read_text()) if path.exists() else {}
+        desired = {k: {'type': 'stdio', 'command': v[0], 'args': v[1:]} for k, v in commands.items()}
+        desired['context7'] = {'type': 'http', 'url': manifest['mcp']['context7']['url']}
+        data['mcpServers'] = merge_servers(data.get('mcpServers', {}), desired, replace_legacy)
+        save(path, (json.dumps(data, indent=2) + '\n').encode())
+    if 'opencode' in clients:
+        path = home / '.config/opencode/opencode.json'
+        if path.with_suffix('.jsonc').exists():
+            raise ValueError('OpenCode JSONC exists; merge manually instead of creating competing JSON.')
+        data = json.loads(path.read_text()) if path.exists() else {}
+        mcp = data.setdefault('mcp', {})
+        if mcp and 'servers' not in mcp:
+            mcp = {k: dict(v) for k, v in mcp.items()}
+            for v in mcp.values():
+                if 'enabled' in v:
+                    v['disabled'] = not v.pop('enabled')
+            data['mcp'] = {'servers': mcp}
+        desired = {k: {'type': 'local', 'command': v} for k, v in commands.items()}
+        desired['context7'] = {'type': 'remote', 'url': manifest['mcp']['context7']['url']}
+        data['mcp']['servers'] = merge_servers(data['mcp'].get('servers', {}), desired, replace_legacy)
+        models = manifest['opencode_models']
+        data.setdefault('model', models['build'])
+        agents = data.setdefault('agents', {})
+        for name in ('plan', 'build'):
+            agents.setdefault(name, {}).setdefault('model', models[name])
+        save(path, (json.dumps(data, indent=2) + '\n').encode())
+        copy_missing(DATA / 'templates/opencode', path.parent, '*.md')
+    if 'codex' in clients:
+        path = home / '.codex/config.toml'
+        text = path.read_text() if path.exists() else ''
+        data = tomllib.loads(text)
+        if replace_legacy and '@modelcontextprotocol/server-github' in data.get('mcp_servers', {}).get('github', {}).get('args', []):
+            chunks = re.split(r'(?=^\[)', text, flags=re.M)
+            text = ''.join(chunk for chunk in chunks if not re.match(r'^\[mcp_servers\.github(?:\]|\.)', chunk))
+            data = tomllib.loads(text)
+        desired = {k: {'command': v[0], 'args': v[1:]} for k, v in commands.items()}
+        desired['context7'] = {'url': manifest['mcp']['context7']['url']}
+        for name, entry in desired.items():
+            if name in data.get('mcp_servers', {}):
+                print(f'preserved existing MCP: {name}')
+                continue
+            text += '\n[mcp_servers.' + name + ']\n'
+            for key, value in entry.items():
+                text += key + ' = ' + json.dumps(value) + '\n'
+        tomllib.loads(text)
+        save(path, text.encode())
+    if 'codex' in clients:
+        copy_missing(DATA / 'templates/codex', home / '.codex', '*')
+    if 'claude' in clients:
+        copy_missing(DATA / 'templates/claude', home / '.claude', '*.md')
+    copy_missing(DATA / 'skills', home / '.agents/skills', '*')
+
+
+def copy_missing(source, target, pattern):
+    for src in source.rglob(pattern):
+        if not src.is_file():
+            continue
+        dst = target / src.relative_to(source)
+        if dst.exists():
+            if dst.read_bytes() != src.read_bytes():
+                print(f'conflict, kept local file: {dst}')
+            continue
+        save(dst, src.read_bytes())
+
+
+def fetch(url):
+    request = urllib.request.Request(url, headers={'User-Agent': 'dotfiles-ai-setup'})
+    with urllib.request.urlopen(request, timeout=90) as response:
+        return response.read()
+
+
+def install_servers(manifest):
+    system = platform.system()
+    machine = platform.machine().lower()
+    arch = {'x86_64': 'x86_64', 'amd64': 'x86_64', 'aarch64': 'arm64', 'arm64': 'arm64'}.get(machine)
+    if system not in ('Darwin', 'Linux') or not arch:
+        raise ValueError(f'Unsupported platform: {system}/{machine}')
+    version = manifest['mcp']['github']['version']
+    name = f'github-mcp-server_{system}_{arch}.tar.gz'
+    base = f'https://github.com/github/github-mcp-server/releases/download/v{version}/'
+    checksums = fetch(base + f'github-mcp-server_{version}_checksums.txt').decode()
+    expected = next(line.split()[0] for line in checksums.splitlines() if line.split()[-1].lstrip('*') == name)
+    archive = fetch(base + name)
+    if hashlib.sha256(archive).hexdigest() != expected:
+        raise ValueError('GitHub MCP checksum mismatch')
+    with tarfile.open(fileobj=io.BytesIO(archive), mode='r:gz') as tar:
+        member = next(m for m in tar.getmembers() if m.isfile() and Path(m.name).name == 'github-mcp-server')
+        data = tar.extractfile(member).read()
+    binary = Path.home() / f'.local/lib/github-mcp-server/{version}/github-mcp-server'
+    save(binary, data)
+    binary.chmod(0o755)
+    package = manifest['mcp']['playwright']
+    subprocess.run(['npx', '-y', package['package'] + '@' + package['version'], '--version'], check=True)
+
+
+def install_skills(clients, manifest):
+    source = manifest['skills']['mattpocock']
+    # Native managers can modify their registries; preserve those before invoking them.
+    for relative in ('.codex/config.toml', '.claude/settings.json', '.claude/plugins/installed_plugins.json'):
+        path = Path.home() / relative
+        if path.is_file():
+            backup = Path.home() / '.config-backup/ai' / STAMP / relative
+            backup.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            for parent in [backup.parent, *backup.parents]:
+                if parent == Path.home():
+                    break
+                parent.chmod(0o700)
+            shutil.copy2(path, backup)
+            backup.chmod(0o600)
+    if 'codex' in clients:
+        if (Path.home()/'.codex/plugins/cache/mattpocock/mattpocock-skills').is_dir():
+            print('preserved existing Codex plugin; check enabled state in Codex')
+        else:
+            subprocess.run(['codex', 'plugin', 'marketplace', 'add', source['repository']], check=True)
+            subprocess.run(['codex', 'plugin', 'add', source['plugin']], check=True)
+    if 'claude' in clients:
+        if (Path.home()/'.claude/plugins/cache/mattpocock/mattpocock-skills').is_dir():
+            print('preserved existing Claude plugin; check enabled state in Claude')
+        else:
+            subprocess.run(['claude', 'plugin', 'marketplace', 'add', source['repository']], check=True)
+            subprocess.run(['claude', 'plugin', 'install', source['plugin']], check=True)
+    if 'opencode' in clients:
+        archive = fetch('https://codeload.github.com/' + source['repository'] + '/tar.gz/' + source['ref'])
+        with tarfile.open(fileobj=io.BytesIO(archive), mode='r:gz') as tar:
+            for member in tar.getmembers():
+                parts = Path(member.name).parts
+                # Main package skills only; exclude in-progress and unrelated folders.
+                if not member.isfile() or len(parts) < 5 or parts[1] != 'skills' or parts[2] not in ('engineering', 'productivity') or parts[3] not in source['names']:
+                    continue
+                rel = Path(*parts[3:])
+                if '..' in rel.parts:
+                    raise ValueError('Unsafe skill archive member')
+                dst = Path.home() / '.config/opencode/skills' / rel
+                data = tar.extractfile(member).read()
+                if dst.exists() and dst.read_bytes() != data:
+                    print(f'conflict, kept local skill: {dst}')
+                    continue
+                save(dst, data)
+
+
+def check(clients, manifest):
+    problems = 0
+    def status(ok, label):
+        nonlocal problems
+        print(('ok: ' if ok else 'missing: ') + label)
+        if not ok:
+            problems += 1
+    for command in ('python3', 'git', 'gh', 'node', 'npx', 'codebase-memory-mcp'):
+        status(bool(shutil.which(command)), command)
+    for name in clients:
+        status(bool(shutil.which(name)), name)
+    binary = Path.home() / ('.local/lib/github-mcp-server/' + manifest['mcp']['github']['version'] + '/github-mcp-server')
+    status(binary.is_file() and os.access(binary, os.X_OK), 'official GitHub MCP binary')
+    for name in ('github-mcp-gh', 'playwright-mcp'):
+        status(os.access(Path.home()/'.local/bin'/name, os.X_OK), name)
+    for client in clients:
+        path = Path.home() / {'codex': '.codex/config.toml', 'claude': '.claude.json', 'opencode': '.config/opencode/opencode.json'}[client]
+        try:
+            data = tomllib.loads(path.read_text()) if client == 'codex' else json.loads(path.read_text())
+            servers = data.get('mcp_servers', {}) if client == 'codex' else data.get('mcpServers', {}) if client == 'claude' else data.get('mcp', {}).get('servers', {})
+            for name in manifest['mcp']['required']:
+                status(name in servers, client + ' MCP ' + name)
+            old = servers.get('github', {})
+            status('@modelcontextprotocol/server-github' not in json.dumps(old), client + ' official GitHub MCP (not legacy npm)')
+        except (OSError, ValueError):
+            status(False, client + ' readable configuration')
+    names = manifest['skills']['mattpocock']['names']
+    if 'opencode' in clients:
+        status(all((Path.home()/'.config/opencode/skills'/n/'SKILL.md').is_file() for n in names), '27 OpenCode skill files')
+    for client, path in [('codex', '.codex/plugins/cache/mattpocock/mattpocock-skills'), ('claude', '.claude/plugins/cache/mattpocock/mattpocock-skills')]:
+        if client in clients:
+            status((Path.home()/path).is_dir(), client + ' Matt Pocock plugin files (check enabled status in client)')
+    for name in manifest['skills']['local']:
+        status((Path.home()/'.agents/skills'/name/'SKILL.md').is_file(), 'local skill ' + name)
+    print('Local authentication: gh auth status; OpenCode /connect; Claude/Codex login. Tokens are not inspected.')
+    return 1 if problems else 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--apply', action='store_true', help='merge missing settings, preserving existing values')
+    parser.add_argument('--install-servers', action='store_true', help='download pinned GitHub/Playwright servers')
+    parser.add_argument('--install-skills', action='store_true', help='install client plugins and pinned OpenCode skill copies')
+    parser.add_argument('--replace-legacy-github', action='store_true', help='explicitly migrate only the known deprecated npm GitHub server')
+    parser.add_argument('--check', action='store_true', help='read-only presence/configuration check, no network')
+    parser.add_argument('--client', action='append', choices=['codex', 'claude', 'opencode'])
+    args = parser.parse_args()
+    manifest = json.loads((DATA / 'environment.json').read_text())
+    clients = args.client or manifest['clients']
+    if args.check:
+        return check(clients, manifest)
+    if not any((args.apply, args.install_servers, args.install_skills)):
+        print('Plan: merge missing MCP/settings for ' + ', '.join(clients) + '; preserve existing values; back up changed files.')
+        print('Explicit actions: --apply, --install-servers, --install-skills, --check. See docs/ai-environment.md.')
+        return 0
+    if args.install_servers:
+        install_servers(manifest)
+    if args.install_skills:
+        install_skills(clients, manifest)
+    if args.apply:
+        configure(clients, manifest, args.replace_legacy_github)
+    return 0
+
+
+STAMP = datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f')
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except (OSError, ValueError, StopIteration, subprocess.CalledProcessError) as error:
+        sys.exit('AI setup stopped; existing backups kept. ' + str(error))

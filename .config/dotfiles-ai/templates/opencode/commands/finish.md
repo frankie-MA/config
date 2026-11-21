@@ -14,7 +14,7 @@ Follow this sequence:
 2. Identify the smallest relevant test or validation commands from the repository instructions and existing project tooling.
 3. Run the focused tests first. If they fail, stop the workflow, do not change source files, and report the failures with the exact commands and likely cause.
 4. If focused tests pass, run broader checks only when they are clearly supported by the project and reasonably bounded.
-5. After tests pass, invoke the `reviewer` subagent to review the current diff for correctness, regressions, security concerns, and missing tests. The reviewer must not edit files.
+5. After tests pass, invoke the `review` subagent to review the current diff for correctness, regressions, security concerns, and missing tests. The reviewer must not edit files.
 6. Return a concise report with changed files, tests run and outcomes, reviewer findings, remaining risks, and a suggested commit message.
 
 Safety rules:

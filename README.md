@@ -23,55 +23,20 @@ cd ~/config-bootstrap
 config-doctor
 ```
 
-## Перенос OpenCode на другую машину
+## Перенос AI-окружения на другую машину
 
-OpenCode-настройки хранятся в dotfiles и после bootstrap восстанавливаются
-вместе с `$HOME`:
+Состав MCP, навыков, моделей и порядок восстановления описаны в
+[AI-окружении](docs/ai-environment.md). Dotfiles хранит безопасные шаблоны,
+а `setup-ai-env --apply` добавляет недостающие локальные файлы без замены
+существующих значений. Авторизация выполняется отдельно в каждом клиенте.
 
-```text
-~/.config/opencode/opencode.json
-~/.config/opencode/AGENTS.md
-~/.config/opencode/agents/
-~/.config/opencode/commands/finish.md
-```
+Для OpenCode сохранены графовые роли, независимый агент `review`, incident-агент
+и команды `finish`/`incident`. Конфигурация первой машины сохранена как
+справочный пример; текущие модели и V2-формат задаёт установщик. После переноса
+проверь `/models`, `/mcps` и загрузку навыков в новом чате.
 
-На новой машине:
-
-1. Установи OpenCode.
-2. Установи `codebase-memory-mcp` и проверь, что команда доступна:
-
-   ```bash
-   command -v codebase-memory-mcp
-   ```
-
-3. Выполни bootstrap из раздела выше.
-4. Перезапусти shell и проверь конфигурацию:
-
-   ```bash
-   check-config
-   config-doctor
-   ```
-
-5. Запусти OpenCode и проверь доступность моделей:
-
-   ```text
-   openai/gpt-6.1-sol
-   opencode/gemini-3.1-pro
-   opencode/claude-sonnet-5-5
-   ```
-
-6. Отдельно подключи нужные провайдеры и Context7. OAuth, API-токены,
-   `service.json`, локальные кэши и `node_modules` не переносятся через git.
-7. Клонируй Graph отдельно и запускай OpenCode из корня репозитория:
-
-   ```bash
-   cd ~/ghq/gitverse.ru/mafck_sct/Graph
-   opencode .
-   ```
-
-После этого доступны агенты `plan`, `build`, `explore`, `reviewer` и команда
-`/finish`. Команда `/finish` запускает сфокусированные проверки и ревью текущего
-diff, но не делает commit, push, merge, reset или clean.
+Проект Graph теперь называется `pvs-efs-assist`. Для него полная сборка и тесты
+выполняются только в закрытом сегменте; `/finish` не отменяет это ограничение.
 
 При первом запуске `nvim` автоматически:
 - установит lazy.nvim
@@ -91,13 +56,24 @@ home commit -m "update kitty"         # закоммитить
 check-config                          # быстрые syntax/runtime проверки
 sync-config                           # ff-only pull, push origin, push SMB, doctor
 config-doctor                         # проверить fish/nvim/starship/kitty/repo mirror/claude MCP
-setup-claude-mcp                      # (пере)накатить MCP-серверы в ~/.claude.json
+setup-claude-mcp                      # добавить недостающие MCP только Claude
 ```
 
-`setup-claude-mcp` вызывается автоматически при `bootstrap.sh`, но идемпотентен — можно
-перезапускать вручную, чтобы добавить новые серверы или починить локальный `~/.claude.json`.
-`~/.claude.json` не трекается (там же токены/сессии/кэш Claude Code), поэтому серверы туда
-подмешиваются скриптом, а не хранятся в git.
+AI-окружение Codex, Claude Code и OpenCode восстанавливается отдельно:
+
+```sh
+setup-ai-env                         # план без изменений
+setup-ai-env --install-servers       # официальный GitHub MCP + Playwright
+setup-ai-env --install-skills        # Matt Pocock для трёх клиентов
+setup-ai-env --apply                 # безопасно добавить недостающие настройки
+setup-ai-env --check                 # проверить файлы и записи
+```
+
+Полный состав MCP, навыков, моделей, авторизация, различия Linux/macOS и
+ограничения проверки: [AI-окружение](docs/ai-environment.md).
+Рабочие конфиги и секреты остаются локальными. Общий workflow для личных
+репозиториев отслеживается в `ghq/AGENTS.md`, для Claude — `ghq/CLAUDE.md`.
+`setup-claude-mcp` оставлен как совместимая команда для одного клиента.
 
 `lazy-lock.json` не трекается: каждая ОС держит свои версии плагинов локально.
 Правила repo: `docs/policy.md`.

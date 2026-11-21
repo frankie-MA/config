@@ -1,7 +1,7 @@
 ---
 description: Read-only Graph incident investigation with evidence grading and fail-closed safety
 mode: subagent
-model: opencode/claude-sonnet-5-5
+model: openrouter/anthropic/claude-sonnet-5.5
 permission:
   "*": deny
   read: allow

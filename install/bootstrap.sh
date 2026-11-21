@@ -5,6 +5,7 @@ set -eu
 repo_url="${CONFIG_REPO_URL:-git@github.com:frankie-MA/config.git}"
 home_git="${HOME_GIT_DIR:-$HOME/.cfg}"
 install_packages=0
+install_ai=0
 
 detect_smb_remote() {
     if [ -n "${SMB_CONFIG_REMOTE:-}" ]; then
@@ -24,12 +25,13 @@ detect_smb_remote() {
 smb_remote="$(detect_smb_remote)"
 
 usage() {
-    printf 'usage: %s [--packages]\n' "$0"
+    printf 'usage: %s [--packages] [--ai]\n' "$0"
 }
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --packages) install_packages=1 ;;
+        --ai) install_ai=1 ;;
         -h|--help) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
     esac
@@ -44,11 +46,11 @@ install_base_packages() {
             if ! command -v brew >/dev/null 2>&1; then
                 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
             fi
-            brew install fish kitty neovim starship zoxide lazygit atuin bat eza fzf mise lua node gh tree-sitter stylua jq
+            brew install fish kitty neovim starship zoxide lazygit atuin bat eza fzf mise lua node gh tree-sitter stylua jq python uv
             ;;
         Linux)
             if command -v pacman >/dev/null 2>&1; then
-                sudo pacman -S --needed fish kitty neovim starship zoxide lazygit atuin bat eza fzf mise lua nodejs npm github-cli tree-sitter-cli stylua jq cifs-utils
+                sudo pacman -S --needed fish kitty neovim starship zoxide lazygit atuin bat eza fzf mise lua nodejs npm github-cli tree-sitter-cli stylua jq python uv cifs-utils
             else
                 printf 'Unsupported Linux package manager. Install packages manually.\n' >&2
                 exit 1
@@ -142,12 +144,11 @@ fi
 checkout_dotfiles
 ensure_fish_shell
 
-if [ -x "$HOME/.local/bin/setup-claude-mcp" ]; then
-    if command -v jq >/dev/null 2>&1; then
-        "$HOME/.local/bin/setup-claude-mcp"
-    else
-        printf 'skip: jq not installed, run setup-claude-mcp manually later\n'
-    fi
+# AI setup is explicit: client configs/authentication remain local.
+if [ "$install_ai" -eq 1 ]; then
+    "$HOME/.local/bin/setup-ai-env" --install-servers --install-skills --apply
+else
+    printf 'AI environment: read docs/ai-environment.md, then run setup-ai-env explicitly.\n'
 fi
 
 if command -v config-doctor >/dev/null 2>&1; then

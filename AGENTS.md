@@ -69,16 +69,16 @@ always pass `--git-dir`/`--work-tree` explicitly with their own pathspecs.
 - **`config-doctor`** — full health check: fish syntax, nvim headless
   startup, starship config, required kitty files present, work-tree clean,
   local `HEAD` matches `origin/main`, SMB mirror in sync (or
-  `skip: SMB mirror not mounted or not configured`), and the expected
-  Claude Code MCP servers exist in `~/.claude.json`.
-- **`setup-claude-mcp`** — idempotent; merges `filesystem`, `github`,
-  `memory`, `sequential-thinking`, `tree-sitter` (plus `homebrew` only on
-  macOS when `brew` exists) into `~/.claude.json`'s `mcpServers`, using
-  Claude Code's own `${HOME}` / `${GITHUB_TOKEN}` expansion syntax rather
-  than a hardcoded path — needs `jq`. **`~/.claude.json` itself is NOT
-  tracked** (it holds OAuth/session/cache state), so this script is the
-  only mechanism that puts these servers there; it runs automatically at
-  the end of `bootstrap.sh` and is safe to re-run anytime.
+  `skip: SMB mirror not mounted or not configured`). With `--ai`, also runs `setup-ai-env --check` for AI client files and MCP entries (not connectivity).
+- **`setup-ai-env`** — без флагов показывает план; `--apply` добавляет
+  недостающие настройки трёх клиентов с резервной копией и сохранением
+  существующих значений. `--install-servers` и `--install-skills` — явные
+  сетевые этапы; `--check` — локальная проверка наличия.
+- **`setup-claude-mcp`** — совместимая команда для `setup-ai-env --apply --client claude`.
+  Для настройки, переноса на другую машину, обновления MCP/skills/моделей,
+  авторизации и проверки AI-окружения сначала прочитай `docs/ai-environment.md`.
+  Состав и версии — `.config/dotfiles-ai/environment.json`; реальные клиентские
+  конфиги с секретами не отслеживаются. Правила личных проектов — `ghq/AGENTS.md`.
 - **`mount-config-smb`** — checks/triggers the SMB mirror mount: on macOS,
   mounts via Finder/`osascript` if not already mounted; on Linux, just
   touches the mount point (enough to trigger the systemd automount below)
@@ -96,7 +96,7 @@ cd ~/config-bootstrap
 
 1. Installs base packages for the detected OS (`brew` on Darwin, `pacman`
    on Arch/Omarchy Linux — see the script for the exact list; currently
-   includes `jq` for `setup-claude-mcp` and `cifs-utils` for the SMB
+   includes Python 3.11+ for `setup-ai-env` and `cifs-utils` for the SMB
    mirror).
 2. Bare-clones the repo to `~/.cfg`.
 3. **On a fresh clone only**, moves any *whole* pre-existing app-config
@@ -117,7 +117,7 @@ cd ~/config-bootstrap
    single tracked file that already exists, not caught by step 3) get
    backed up reactively to `~/.config-backup/<timestamp>/` the same way.
 5. Sets fish as the login shell (`chsh`).
-6. Runs `setup-claude-mcp` if `jq` is available, then `config-doctor`.
+6. With explicit `--ai`, runs `setup-ai-env --install-servers --install-skills --apply`; otherwise leaves AI clients unchanged. Then runs `config-doctor`.
 
 The manual (no-`--packages`) bare-clone steps are in `docs/bootstrap.md`.
 The SMB automount setup (below) is a separate, deliberately-manual step —
