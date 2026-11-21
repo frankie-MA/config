@@ -2,6 +2,53 @@
   "$schema": "https://opencode.ai/config.json",
   "model": "openai/gpt-6.1-sol",
   "default_agent": "plan",
+  "providers": {
+    "gigachat": {
+      "name": "GigaChat (Sberbank)",
+      "package": "@opencode/ai/providers/openai-compatible",
+      "settings": {
+        "baseURL": "https://api.gigachat.local/v1",
+        "apiKey": "gigachat-oauth-handled-by-plugin"
+      },
+      "compatibility": {
+        "maxTokensField": "max_tokens"
+      },
+      "models": {
+        "GigaChat-2-Max": {
+          "name": "GigaChat 2 Max",
+          "capabilities": {
+            "tools": true,
+            "input": ["text", "image"],
+            "output": ["text"]
+          },
+          "limit": { "context": 128000, "output": 8192 },
+          "variants": [
+            { "id": "low", "body": { "reasoning_effort": "low" } },
+            { "id": "medium", "body": { "reasoning_effort": "medium" } },
+            { "id": "high", "body": { "reasoning_effort": "high" } }
+          ]
+        },
+        "GigaChat-2-Pro": {
+          "name": "GigaChat 2 Pro",
+          "capabilities": {
+            "tools": true,
+            "input": ["text", "image"],
+            "output": ["text"]
+          },
+          "limit": { "context": 128000, "output": 8192 }
+        },
+        "GigaChat-2": {
+          "name": "GigaChat 2",
+          "capabilities": {
+            "tools": true,
+            "input": ["text"],
+            "output": ["text"]
+          },
+          "limit": { "context": 128000, "output": 4096 }
+        }
+      }
+    }
+  },
   "permissions": [
     {
       "action": "external_directory",
