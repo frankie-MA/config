@@ -624,6 +624,8 @@ item_advisories() {
     ad_eth=
     for ad_net in /sys/class/net/*; do
         [ -r "$ad_net/carrier" ] || continue
+        # Physical devices only: wireguard, bridges and veth have no device link.
+        [ -e "$ad_net/device" ] || continue
         case ${ad_net##*/} in
             lo | wl* | docker* | veth* | wg* | br-* | tun* | tailscale*) continue ;;
         esac
