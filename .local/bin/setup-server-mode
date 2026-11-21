@@ -6,8 +6,9 @@
 # account and session, ignoring the lid, blocking suspend entirely, lingering
 # user services, sshd, docker, a weekly package update timer, and the parts that
 # decide whether the machine stays reachable with nobody sitting at it: SDDM
-# relogin, a wi-fi profile that autoconnects with a system-stored secret, and
-# no idle lock.
+# relogin, a wi-fi profile that autoconnects with a system-stored secret,
+# wg-quick tunnels that wait for the network instead of racing it, and no idle
+# lock.
 #
 # Every step is idempotent. Files are compared before they are written, and the
 # previous version is kept next to the file as <file>.bak.<epoch>. Nothing is
@@ -528,6 +529,59 @@ item_idle() {
     return 0
 }
 
+# shellcheck disable=SC2329 # passed to sync_and_report by name
+wireguard_dropin() {
+    cat <<'EOF'
+[Unit]
+# At boot wg-quick can beat NetworkManager to the interface: it runs before a
+# default route exists, `ip route add <endpoint>` fails with RTNETLINK "Network
+# is unreachable", and the unit still reports success while the tunnel is
+# unusable. Wait for a default route first. TimeoutStartSec keeps a machine with
+# no network from hanging here forever.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStartPre=/bin/sh -c 'until ip route show default | grep -q .; do sleep 1; done'
+TimeoutStartSec=180
+EOF
+}
+
+item_wireguard() {
+    wg_units=$(systemctl list-units --type=service --all --no-legend 'wg-quick@*.service' 2>/dev/null |
+        awk '{ print $1 }') || wg_units=
+    if [ -z "$wg_units" ]; then
+        report SKIP wireguard 'no wg-quick instances'
+        return 0
+    fi
+
+    # shellcheck disable=SC2086 # the list is space separated on purpose
+    for wg_unit in $wg_units; do
+        wg_name=${wg_unit#wg-quick@}
+        wg_name=${wg_name%.service}
+        [ "$wg_name" = . ] && continue
+        wg_dropin=/etc/systemd/system/$wg_unit.d/50-wait-for-network.conf
+
+        sync_and_report "wg-wait($wg_name)" "$wg_dropin" 0644 wireguard_dropin
+        if [ "$SYNC_RC" -eq 2 ] && [ "$MODE" = apply ]; then
+            systemctl daemon-reload
+            # The unit is usually "active (exited)" after a broken boot, so a
+            # plain start would be a no-op. Restart it and judge by the
+            # interface, not by the exit status of the cycle.
+            systemctl restart "$wg_unit" >/dev/null 2>&1 || true
+        fi
+
+        if ip link show "$wg_name" >/dev/null 2>&1; then
+            report OK "wg-link($wg_name)" 'tunnel interface is up'
+        elif [ "$MODE" = apply ]; then
+            report WARN "wg-link($wg_name)" 'interface still down, check: journalctl -u '"$wg_unit"
+        else
+            report CHANGE "wg-link($wg_name)" 'interface is down right now'
+        fi
+    done
+    return 0
+}
+
 item_advisories() {
     ad_ac=
     for ad_ps in /sys/class/power_supply/*/online; do
@@ -618,7 +672,7 @@ fi
 printf '%-8s %-24s %s\n' STATUS ITEM DETAIL
 printf '%s\n' '------------------------------------------------------------------------'
 
-for sm_item in autologin logind nosleep linger sshd docker updates ufw wifi idle advisories; do
+for sm_item in autologin logind nosleep linger sshd docker updates ufw wifi wireguard idle advisories; do
     case $sm_item in
         autologin) item_autologin ;;
         logind) item_logind ;;
@@ -629,6 +683,7 @@ for sm_item in autologin logind nosleep linger sshd docker updates ufw wifi idle
         updates) item_updates ;;
         ufw) item_ufw ;;
         wifi) item_wifi ;;
+        wireguard) item_wireguard ;;
         idle) item_idle ;;
         advisories) item_advisories ;;
     esac
