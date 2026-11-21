@@ -573,7 +573,9 @@ item_wireguard() {
                 systemctl stop "$wg_unit" >/dev/null 2>&1 || true
                 systemctl reset-failed "$wg_unit" >/dev/null 2>&1 || true
             fi
-            systemctl restart "$wg_unit" >/dev/null 2>&1 || true
+            # Bounded: a broken tunnel can leave the start job waiting on
+            # DNS or on its own routes, and the script should not hang there.
+            timeout 240 systemctl restart "$wg_unit" >/dev/null 2>&1 || true
         fi
 
         if ip link show "$wg_name" >/dev/null 2>&1; then
@@ -582,6 +584,24 @@ item_wireguard() {
             report WARN "wg-link($wg_name)" 'interface still down, check: journalctl -u '"$wg_unit"
         else
             report CHANGE "wg-link($wg_name)" 'interface is down right now'
+        fi
+
+        # A full tunnel whose endpoint is a private address is almost always the
+        # trap we hit: the local gateway is also the VPN server, so 0.0.0.0/0
+        # sends the LAN, the gateway and the tunnel's own replies back into the
+        # tunnel. Traffic counters show megabytes out and nearly nothing in.
+        wg_conf=/etc/wireguard/$wg_name.conf
+        if [ -r "$wg_conf" ]; then
+            wg_endpoint=$(sed -n 's/^Endpoint[[:space:]]*=[[:space:]]*//p' "$wg_conf" |
+                head -n 1 | cut -d: -f1) || wg_endpoint=
+            case $wg_endpoint in
+                10.* | 192.168.* | 172.1[6-9].* | 172.2[0-9].* | 172.3[01].*)
+                    if grep -qE '^AllowedIPs[[:space:]]*=.*0\.0\.0\.0/0' "$wg_conf"; then
+                        report WARN "wg-config($wg_name)" \
+                            "full tunnel to the private endpoint $wg_endpoint, expect a routing loop"
+                    fi
+                    ;;
+            esac
         fi
     done
     return 0
